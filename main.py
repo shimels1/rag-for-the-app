@@ -21,7 +21,7 @@ logger.info("Environment variables loaded.")
 # Initialize LLM with a faster model (gpt-oss-20b for quick, accurate responses)
 llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY"),
-   model_name="llama-3.1-8b-instant",  # Ultra-fast & accurate for tutoring
+    model_name="llama-3.1-8b-instant",  # Ultra-fast & accurate for tutoring
     temperature=0.1  # Keeps it natural without rambling
 )
 logger.info("Groq LLM initialized with faster model.")
@@ -68,7 +68,10 @@ class AskRequest(BaseModel):
 # Health check endpoint
 @app.get("/", response_class=HTMLResponse)
 async def chat_ui(request: Request):
-    return HTMLResponse(open("index.html").read())
+    # return HTMLResponse(open("index.html").read())
+    return JSONResponse({
+            "message": "hello"
+        })
 
 # Ask endpoint - Using tutor prompt only (text-only, no TTS for speed)
 @app.post("/ask")
