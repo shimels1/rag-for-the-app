@@ -21,7 +21,7 @@ logger.info("Environment variables loaded.")
 # Initialize LLM with a faster model (gpt-oss-20b for quick, accurate responses)
 llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY"),
-    model_name="llama-3.3-70b-versatile",  # Ultra-fast & accurate for tutoring
+   model_name="llama-3.1-8b-instant",  # Ultra-fast & accurate for tutoring
     temperature=0.1  # Keeps it natural without rambling
 )
 logger.info("Groq LLM initialized with faster model.")
