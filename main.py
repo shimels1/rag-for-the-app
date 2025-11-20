@@ -1,106 +1,124 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import os
 import logging
-from dotenv import load_dotenv
-# Enable CORS (for frontend requests)
-from fastapi.middleware.cors import CORSMiddleware
+import os
 
-# Setup logging
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-logger.info("Environment variables loaded.")
+# FastAPI
+app = FastAPI()
 
-# Initialize LLM with a faster model (gpt-oss-20b for quick, accurate responses)
-llm = ChatGroq(
-    api_key=os.getenv("GROQ_API_KEY"),
-    model_name="llama-3.1-8b-instant",  # Ultra-fast & accurate for tutoring
-    temperature=0.1  # Keeps it natural without rambling
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-logger.info("Groq LLM initialized with faster model.")
 
-# Initialize memory (reduced k to 5 for shorter prompts and faster processing)
+# Memory
 memory = ConversationBufferWindowMemory(
     memory_key="chat_history",
     return_messages=True,
-    k=5,  # Reduced from 7 to keep prompts shorter
+    k=5,
     input_key="input",
-    output_key="answer"
+    output_key="answer",
 )
 
-# Updated prompt for beginner English tutor focused on hobbies (simple English, shorter responses)
+# Prompt
 tutor_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     """You are a friendly English tutor for beginners chatting about hobbies. dont talk about yourself talk about more about him.
-     Keep it fun and engaging—share a quick, simple to connect. 
-     Always use very basic, easy English in all responses. 
-     If the user says something incorrect (grammar, word choice, or simple facts), gently correct by starting with 'You mean [corrected version]?' then explain briefly and positively. 
-     For example: 'You mean "I like painting pictures"? Great choice—painting helps relax!' 
-     Otherwise, gently fix errors (e.g., 'Hey, it's "a little bit" – no worries!') and flow on naturally. 
-     Suggest smoother phrases sometimes, like 'Try saying... for a chill vibe.' 
-     Build on past chats from history. 
-     Respond like a relaxed friend: warm, natural, super short—1-3 sentences only."""), 
+     """You are a friendly English tutor for beginners chatting about hobbies.
+     Use very simple English, very short answers (1–3 sentences).
+     Do not talk about yourself; talk more about the user.
+     If the user makes a mistake, correct gently:
+     Start with: 'You mean "...?"' and give the corrected version.
+     Keep conversation warm and friendly."""),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}")
 ])
 
-# FastAPI app
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # You can replace "*" with your frontend URL (e.g., "http://localhost:3000")
-    allow_credentials=True,
-    allow_methods=["*"], # Allow all HTTP methods (GET, POST, OPTIONS, etc.)
-    allow_headers=["*"], # Allow all headers
-)
+# Lazy-load LLM for Vercel (prevents cold-start crashes)
+def get_llm():
+    api_key = os.getenv("GROQ_API_KEY")
 
-# Pydantic model for ask endpoint (removed audio flag)
+    if not api_key:
+        raise Exception("Missing GROQ_API_KEY in environment variables")
+
+    return ChatGroq(
+        api_key=api_key,
+        model_name="llama-3.1-8b-instant",  # fast + stable for Vercel
+        temperature=0.1
+    )
+
+
+# Models
 class AskRequest(BaseModel):
     question: str
 
-# Health check endpoint
-@app.get("/", response_class=HTMLResponse)
-async def chat_ui(request: Request):
-    # return HTMLResponse(open("index.html").read())
-    return JSONResponse({
-            "message": "hello"
-        })
 
-# Ask endpoint - Using tutor prompt only (text-only, no TTS for speed)
+# ROUTES
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    """Serve index.html from /public"""
+    index_path = os.path.join(os.path.dirname(__file__), "../public/index.html")
+    if not os.path.exists(index_path):
+        return HTMLResponse("<h1>index.html not found</h1>", status_code=500)
+    return FileResponse(index_path)
+
+
 @app.post("/ask")
-async def ask_question(request: AskRequest):
+async def ask_question(req: AskRequest):
     try:
-        # Load chat history from memory
+        # Get chat history
         chat_vars = memory.load_memory_variables({})
         chat_history = chat_vars.get("chat_history", [])
-       
-        # Format tutor prompt with history and input
+
+        # Build prompt
         messages = tutor_prompt.format_messages(
-            chat_history=chat_history, 
-            input=request.question
+            chat_history=chat_history,
+            input=req.question
         )
-       
-        # Invoke LLM (this is the main potential bottleneck, but faster model helps)
+
+        # Lazy-load LLM each request
+        llm = get_llm()
+
+        # Generate response
         result = llm.invoke(messages)
         answer = result.content
-       
-        logger.info("Q: %s", request.question)
-        logger.info("A: %s", answer)
-       
-        # Save to memory
-        memory.save_context({"input": request.question}, {"answer": answer})
-       
+
+        # Save memory
+        memory.save_context(
+            {"input": req.question},
+            {"answer": answer}
+        )
+
         return JSONResponse({
-            "question": request.question,
-            "answer": answer,
+            "question": req.question,
+            "answer": answer
         })
+
     except Exception as e:
-        logger.error("Error during QA: %s", str(e))
-        raise HTTPException(status_code=500, detail=f"Error processing question: {str(e)}")
+        logger.error(f"Server error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+# Debug endpoint (optional)
+@app.get("/debug")
+async def debug():
+    return {
+        "cwd": os.getcwd(),
+        "files": os.listdir(os.getcwd()),
+        "GROQ_API_KEY_loaded": bool(os.getenv("GROQ_API_KEY")),
+    }
